@@ -34,12 +34,16 @@ class KVStore:
         ttl_ms=None removes any previous expiration.
         ttl_ms <= 0 raises ValueError without changing the entry.
         """
-        # TODO: Validate TTL before changing either dictionary.
-        # TODO: Calculate the deadline using self._clock() + ttl_ms,
-        #       if a TTL was provided.
-        # TODO: Store the value.
-        # TODO: Set the deadline, or remove any previous deadline.
-        raise NotImplementedError
+        if ttl_ms is not None and ttl_ms <= 0:
+            raise ValueError(f"ttl_ms {ttl_ms} must be > 0")
+        deadline = None if ttl_ms is None else self._clock() + ttl_ms
+        # key might have previously been set with a deadline
+        if deadline is None and key in self._expires_at:
+            del self._expires_at[key]
+        self._data[key] = value
+        if deadline is not None:
+            self._expires_at[key] = deadline
+        
 
     def get(self, key: str) -> str:
         """Return the value, or raise KeyNotFoundError if missing or expired."""
@@ -62,7 +66,6 @@ class KVStore:
 
     def _expire_if_needed(self, key: str) -> None:
         """Remove the key from both dictionaries if now >= its deadline."""
-        # TODO: If the key has no deadline, do nothing.
-        # TODO: If self._clock() >= deadline, remove it
-        #       from both dictionaries.
-        raise NotImplementedError
+        if key in self._expires_at and self._clock() >= self._expires_at[key]:
+            del self._expires_at[key]
+            del self._data[key]
