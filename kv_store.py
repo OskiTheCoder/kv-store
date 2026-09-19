@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from collections.abc import Callable
 from time import time_ns
 
@@ -20,7 +21,7 @@ class KVStore:
         clock: Callable[[], int] = wall_clock_ms,
     ) -> None:
         self._data: dict[str, str] = {}
-        self._expires_at: dict[str, int] = {}
+        self._expires_at: OrderedDict[str, int] = OrderedDict()
         self._clock = clock
 
     def set(
