@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from collections.abc import Callable
+from threading import Event, Lock, Thread
 from time import time_ns
 
 
@@ -19,11 +20,31 @@ class KVStore:
         self,
         *,
         clock: Callable[[], int] = wall_clock_ms,
+        cleanup_interval_ms: int = 100,
+        auto_cleanup: bool = True,
     ) -> None:
+        if cleanup_interval_ms <= 0:
+            raise ValueError("cleanup_interval_ms must be > 0")
+
         self._data: dict[str, str] = {}
         self._expires_at: OrderedDict[str, int] = OrderedDict()
         self._clock = clock
         self._batch_size = 10
+
+        self._lock = Lock()
+        self._stop_event = Event()
+        self._closed = False
+        self._cleanup_interval_s = cleanup_interval_ms / 1000
+        self._cleanup_thread: Thread | None = None
+
+        if auto_cleanup:
+            self._cleanup_thread = Thread(
+                target=self._cleanup_loop,
+                name="kv-store-cleanup",
+                daemon=True,
+            )
+            # enable after implementing the loop and shutdown.
+            # self._cleanup_thread.start()
 
     def set(
         self,
@@ -36,39 +57,58 @@ class KVStore:
         ttl_ms=None removes any previous expiration.
         ttl_ms <= 0 raises ValueError without changing the entry.
         """
-        if ttl_ms is not None and ttl_ms <= 0:
-            raise ValueError(f"ttl_ms {ttl_ms} must be > 0")
-        deadline = None if ttl_ms is None else self._clock() + ttl_ms
-        # key might have previously been set with a deadline
-        if deadline is None and key in self._expires_at:
-            del self._expires_at[key]
-        self._data[key] = value
-        if deadline is not None:
-            self._expires_at[key] = deadline
-        
+        with self._lock:
+            self._ensure_open()
+
+            if ttl_ms is not None and ttl_ms <= 0:
+                raise ValueError(f"ttl_ms {ttl_ms} must be > 0")
+
+            deadline = (
+                None if ttl_ms is None else self._clock() + ttl_ms
+            )
+
+            if deadline is None:
+                self._expires_at.pop(key, None)
+
+            self._data[key] = value
+
+            if deadline is not None:
+                self._expires_at[key] = deadline
 
     def get(self, key: str) -> str:
         """Return the value, or raise KeyNotFoundError if missing or expired."""
-        self._expire_if_needed(key)
+        with self._lock:
+            self._ensure_open()
+            self._expire_if_needed(key)
 
-        if key not in self._data:
-            raise KeyNotFoundError(key)
+            if key not in self._data:
+                raise KeyNotFoundError(key)
 
-        return self._data[key]
+            return self._data[key]
 
     def delete(self, key: str) -> None:
         """Remove the key, or raise KeyNotFoundError if missing or expired."""
-        self._expire_if_needed(key)
+        with self._lock:
+            self._ensure_open()
+            self._expire_if_needed(key)
 
-        if key not in self._data:
-            raise KeyNotFoundError(key)
+            if key not in self._data:
+                raise KeyNotFoundError(key)
 
-        del self._data[key]
-        self._expires_at.pop(key, None)
+            del self._data[key]
+            self._expires_at.pop(key, None)
+
+    def _ensure_open(self) -> None:
+        """Raise if closed. Caller must hold self._lock."""
+        if self._closed:
+            raise RuntimeError("KVStore is closed")
 
     def _expire_if_needed(self, key: str) -> None:
-        """Remove the key from both dictionaries if now >= its deadline."""
-        if key in self._expires_at and self._clock() >= self._expires_at[key]:
+        """Remove an expired key. Caller must hold self._lock."""
+        if (
+            key in self._expires_at
+            and self._clock() >= self._expires_at[key]
+        ):
             del self._expires_at[key]
             del self._data[key]
 
@@ -79,21 +119,40 @@ class KVStore:
         Inspect each key at most once per call.
         Return the number of keys removed.
         """
-        checks = min(self._batch_size, len(self._expires_at))
-        keys_removed = 0
+        with self._lock:
+            if self._closed:
+                return 0
 
-        for _ in range(checks):
-            key = next(iter(self._expires_at))
-            self._expire_if_needed(key)
+            checks = min(self._batch_size, len(self._expires_at))
+            keys_removed = 0
 
-            if key not in self._expires_at:
-                keys_removed += 1
-            else:
-                self._expires_at.move_to_end(key)
+            for _ in range(checks):
+                key = next(iter(self._expires_at))
+                self._expire_if_needed(key)
 
-        return keys_removed
-                
+                if key not in self._expires_at:
+                    keys_removed += 1
+                else:
+                    self._expires_at.move_to_end(key)
 
+            return keys_removed
+
+    def _cleanup_loop(self) -> None:
+        """Wait between batches until shutdown is requested."""
+        # TODO: wait using:
+        #       self._stop_event.wait(self._cleanup_interval_s)
+        #       it returns True when shutdown is signaled.
+        # TODO: if signaled, exit; otherwise run self._expire_batch().
+        # never hold self._lock while waiting.
+        raise NotImplementedError
+
+    def close(self) -> None:
+        """Mark the store closed, signal shutdown, and wait for the worker."""
+        # TODO: under self._lock, mark closed and set the stop event.
+        # TODO: release the lock BEFORE joining the worker.
+        # TODO: join the worker if it was started.
+        # repeated calls should be harmless and still wait for shutdown.
+        raise NotImplementedError
             
             
                 
