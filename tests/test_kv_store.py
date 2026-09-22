@@ -114,3 +114,43 @@ def test_delete_expired_key_raises_and_cleans_up() -> None:
 
     assert "name" not in store._data
     assert "name" not in store._expires_at
+
+def test_expire_batch_expires_keys() -> None:
+    clock = FakeClock()
+    store = KVStore(clock=clock)
+
+    store.set("name", "alice", ttl_ms=1000)
+    store.set("foo", "bar", ttl_ms=2000)
+    store.set("hello", "world", ttl_ms=10)
+
+    clock.advance(9)
+    keys_removed = store._expire_batch()
+
+    assert keys_removed == 0
+    assert len(store._data) == 3
+
+    clock.advance(1)
+    keys_removed = store._expire_batch()
+
+    assert keys_removed == 1
+    assert len(store._data) == 2
+
+def test_expire_batch_respects_budget_and_rotates() -> None:
+    clock = FakeClock()
+    store = KVStore(clock=clock)
+    store._batch_size = 2
+
+    store.set("first", "alice", ttl_ms=1000)
+    store.set("second", "bob", ttl_ms=1000)
+    store.set("third", "charlie", ttl_ms=10)
+
+    clock.advance(10)
+
+    # only the first two keys are inspected and moved to the back.
+    assert store._expire_batch() == 0
+    assert "third" in store._data
+
+    # the next batch reaches the expired key.
+    assert store._expire_batch() == 1
+    assert "third" not in store._data
+    assert "third" not in store._expires_at

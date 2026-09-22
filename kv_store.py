@@ -23,6 +23,7 @@ class KVStore:
         self._data: dict[str, str] = {}
         self._expires_at: OrderedDict[str, int] = OrderedDict()
         self._clock = clock
+        self._batch_size = 10
 
     def set(
         self,
@@ -70,3 +71,30 @@ class KVStore:
         if key in self._expires_at and self._clock() >= self._expires_at[key]:
             del self._expires_at[key]
             del self._data[key]
+
+    def _expire_batch(self) -> int:
+        """Inspect up to _batch_size TTL keys and remove expired entries.
+
+        Move unexpired keys to the back.
+        Inspect each key at most once per call.
+        Return the number of keys removed.
+        """
+        checks = min(self._batch_size, len(self._expires_at))
+        keys_removed = 0
+
+        for _ in range(checks):
+            key = next(iter(self._expires_at))
+            self._expire_if_needed(key)
+
+            if key not in self._expires_at:
+                keys_removed += 1
+            else:
+                self._expires_at.move_to_end(key)
+
+        return keys_removed
+                
+
+            
+            
+                
+
