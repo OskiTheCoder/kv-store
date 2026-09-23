@@ -138,21 +138,20 @@ class KVStore:
             return keys_removed
 
     def _cleanup_loop(self) -> None:
-        """Wait between batches until shutdown is requested."""
-        # TODO: wait using:
-        #       self._stop_event.wait(self._cleanup_interval_s)
-        #       it returns True when shutdown is signaled.
-        # TODO: if signaled, exit; otherwise run self._expire_batch().
-        # never hold self._lock while waiting.
-        raise NotImplementedError
+        """Run cleanup batches until shutdown is requested."""
+        while not self._stop_event.wait(self._cleanup_interval_s):
+            self._expire_batch()
+
 
     def close(self) -> None:
-        """Mark the store closed, signal shutdown, and wait for the worker."""
-        # TODO: under self._lock, mark closed and set the stop event.
-        # TODO: release the lock BEFORE joining the worker.
-        # TODO: join the worker if it was started.
-        # repeated calls should be harmless and still wait for shutdown.
-        raise NotImplementedError
+        """Close the store and wait for its cleanup worker to finish."""
+        with self._lock:
+            self._closed = True
+            self._stop_event.set()
+
+        # wait outside the lock so the worker can finish any pending batch.
+        if self._cleanup_thread is not None:
+            self._cleanup_thread.join()
             
             
                 
