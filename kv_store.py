@@ -103,6 +103,28 @@ class KVStore:
                     self._expires_at.move_to_end(key)
 
             return keys_removed
-            
-                
+
+    def scan_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        """Return non-expired key-value pairs whose keys start with prefix.
+
+        Results are sorted by key in ascending order.
+        An empty prefix matches all non-expired keys.
+        Return an empty list if nothing matches.
+        """
+        with self._lock:
+            now = self._clock()
+            matches = []
+
+            for key, value in self._data.items():
+                if not key.startswith(prefix):
+                    continue
+
+                deadline = self._expires_at.get(key)
+                if deadline is not None and now >= deadline:
+                    continue
+
+                matches.append((key, value))
+
+        matches.sort(key=lambda pair: pair[0])
+        return matches
 

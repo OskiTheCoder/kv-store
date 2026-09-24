@@ -168,3 +168,11 @@ def test_expire_batch_respects_budget_and_rotates(
     assert store._expire_batch() == 1
     assert "third" not in store._expires_at
     assert store._data == {"first": "alice", "second": "bob"}
+
+def test_prefix_search_matching_keys(store: KVStore) -> None:
+    store.set("user:1", "alice")
+    store.set("user:2", "bob")
+    store.set("foo", "bar")
+
+    matches = store.scan_prefix("user")
+    assert matches == [("user:1", "alice"), ("user:2", "bob")]
