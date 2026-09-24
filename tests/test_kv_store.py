@@ -3,9 +3,15 @@ import pytest
 from kv_store import KVStore, KeyNotFoundError
 from tests.utils import FakeClock
 
+
 @pytest.fixture
-def store() -> KVStore:
-    return KVStore()
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture
+def store(clock: FakeClock) -> KVStore:
+    return KVStore(clock=clock)
 
 
 def test_set_and_get(store: KVStore) -> None:
@@ -26,7 +32,7 @@ def test_get_missing_key_raises(store: KVStore) -> None:
         store.get("missing")
 
 
-def test_set_delete_get_missing_key_raises(store: KVStore) -> None:
+def test_deleted_key_cannot_be_retrieved(store: KVStore) -> None:
     store.set("name", "alice")
     store.delete("name")
 
@@ -41,11 +47,13 @@ def test_delete_missing_key_raises(store: KVStore) -> None:
 
 def test_set_and_get_empty_key(store: KVStore) -> None:
     store.set("", "empty")
+
     assert store.get("") == "empty"
 
 
 def test_set_and_get_empty_value(store: KVStore) -> None:
     store.set("empty", "")
+
     assert store.get("empty") == ""
 
 
@@ -61,10 +69,9 @@ def test_independent_keys(store: KVStore) -> None:
     assert store.get("name1") == "charlie"
 
 
-def test_key_expires_at_deadline() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
-
+def test_key_expires_at_deadline(
+    store: KVStore, clock: FakeClock
+) -> None:
     store.set("name", "alice", ttl_ms=100)
 
     clock.advance(99)
@@ -74,38 +81,46 @@ def test_key_expires_at_deadline() -> None:
     with pytest.raises(KeyNotFoundError):
         store.get("name")
 
-def test_no_ttl_not_in_expires_dict() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
-
-    store.set("name", "bob")
+    assert "name" not in store._data
     assert "name" not in store._expires_at
 
-    clock.advance(10000)
+
+def test_key_without_ttl_does_not_expire(
+    store: KVStore, clock: FakeClock
+) -> None:
+    store.set("name", "bob")
+
+    assert "name" not in store._expires_at
+
+    clock.advance(10_000)
+
     assert store.get("name") == "bob"
 
-def test_negative_ttl_raises() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
+
+@pytest.mark.parametrize("ttl_ms", [0, -1])
+def test_nonpositive_ttl_raises(store: KVStore, ttl_ms: int) -> None:
     with pytest.raises(ValueError):
-        store.set("name", "bob", -1)
+        store.set("name", "bob", ttl_ms=ttl_ms)
 
-def test_overwrite_ttl_key_without_ttl() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
+    assert "name" not in store._data
+    assert "name" not in store._expires_at
 
-    store.set("name", "alice", 100)
-    assert "name" in store._expires_at
 
+def test_overwrite_ttl_key_without_ttl(
+    store: KVStore, clock: FakeClock
+) -> None:
+    store.set("name", "alice", ttl_ms=100)
     store.set("name", "bob")
+
+    clock.advance(100)
 
     assert store.get("name") == "bob"
     assert "name" not in store._expires_at
 
-def test_delete_expired_key_raises_and_cleans_up() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
 
+def test_delete_expired_key_raises_and_cleans_up(
+    store: KVStore, clock: FakeClock
+) -> None:
     store.set("name", "alice", ttl_ms=100)
     clock.advance(100)
 
@@ -115,29 +130,29 @@ def test_delete_expired_key_raises_and_cleans_up() -> None:
     assert "name" not in store._data
     assert "name" not in store._expires_at
 
-def test_expire_batch_expires_keys() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
 
+def test_expire_batch_expires_keys(
+    store: KVStore, clock: FakeClock
+) -> None:
     store.set("name", "alice", ttl_ms=1000)
     store.set("foo", "bar", ttl_ms=2000)
     store.set("hello", "world", ttl_ms=10)
 
     clock.advance(9)
-    keys_removed = store._expire_batch()
 
-    assert keys_removed == 0
+    assert store._expire_batch() == 0
     assert len(store._data) == 3
 
     clock.advance(1)
-    keys_removed = store._expire_batch()
 
-    assert keys_removed == 1
-    assert len(store._data) == 2
+    assert store._expire_batch() == 1
+    assert store._data == {"name": "alice", "foo": "bar"}
+    assert "hello" not in store._expires_at
 
-def test_expire_batch_respects_budget_and_rotates() -> None:
-    clock = FakeClock()
-    store = KVStore(clock=clock)
+
+def test_expire_batch_respects_budget_and_rotates(
+    store: KVStore, clock: FakeClock
+) -> None:
     store._batch_size = 2
 
     store.set("first", "alice", ttl_ms=1000)
@@ -146,11 +161,10 @@ def test_expire_batch_respects_budget_and_rotates() -> None:
 
     clock.advance(10)
 
-    # only the first two keys are inspected and moved to the back.
     assert store._expire_batch() == 0
     assert "third" in store._data
+    assert list(store._expires_at) == ["third", "first", "second"]
 
-    # the next batch reaches the expired key.
     assert store._expire_batch() == 1
-    assert "third" not in store._data
     assert "third" not in store._expires_at
+    assert store._data == {"first": "alice", "second": "bob"}
