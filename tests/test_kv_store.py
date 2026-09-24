@@ -176,3 +176,25 @@ def test_prefix_search_matching_keys(store: KVStore) -> None:
 
     matches = store.scan_prefix("user")
     assert matches == [("user:1", "alice"), ("user:2", "bob")]
+
+def test_prefix_search_excludes_expired_keys(
+    store: KVStore, clock: FakeClock
+) -> None:
+    store.set("user:1", "alice", ttl_ms=100)
+    store.set("user:2", "bob")
+
+    clock.advance(100)
+
+    assert store.scan_prefix("user:") == [("user:2", "bob")]
+
+
+def test_empty_prefix_returns_all_keys_sorted(store: KVStore) -> None:
+    store.set("user:2", "bob")
+    store.set("foo", "bar")
+    store.set("user:1", "alice")
+
+    assert store.scan_prefix("") == [
+        ("foo", "bar"),
+        ("user:1", "alice"),
+        ("user:2", "bob"),
+    ]
